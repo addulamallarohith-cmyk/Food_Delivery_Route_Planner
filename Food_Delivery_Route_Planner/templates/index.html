@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Food Delivery Route Planner</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="hero">
+  <div>
+    <p class="eyebrow">ALGORITHM-CENTRIC PROJECT</p>
+    <h1>Food Delivery Route Planner</h1>
+    <p class="subtitle">Optimize multi-order delivery sequences using Greedy, 2-Opt and Dijkstra algorithms.</p>
+  </div>
+  <div class="badge">Python + Flask</div>
+</header>
+
+<main class="container">
+  <section class="card">
+    <div class="section-title">
+      <div>
+        <h2>Delivery Locations</h2>
+        <p>Edit coordinates to test different delivery networks.</p>
+      </div>
+      <button id="resetBtn" class="secondary">Reset</button>
+    </div>
+
+    <div class="table-wrap">
+      <table id="locationsTable">
+        <thead><tr><th>Location</th><th>X</th><th>Y</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="controls">
+      <button id="addBtn" class="secondary">+ Add Location</button>
+      <label>
+        Starting Point
+        <select id="startSelect"></select>
+      </label>
+      <button id="planBtn" class="primary">Optimize Route</button>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <div class="stats">
+      <div class="stat"><span>Greedy Distance</span><strong id="nnDistance">—</strong></div>
+      <div class="stat"><span>Improved Distance</span><strong id="improvedDistance">—</strong></div>
+      <div class="stat"><span>Distance Saved</span><strong id="savedDistance">—</strong></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Route Comparison</h2>
+        <div id="routes"></div>
+      </div>
+      <div class="card">
+        <h2>Shortest Path (Dijkstra)</h2>
+        <div id="dijkstra"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How the Algorithms Work</h2>
+    <div class="algorithm-grid">
+      <article><b>Greedy / Nearest Neighbor</b><p>Repeatedly visits the closest unvisited customer. It is fast and easy to understand, but may not produce the shortest tour.</p></article>
+      <article><b>2-Opt Improvement</b><p>Rearranges route edges to remove unnecessary crossings and reduce the total travel distance.</p></article>
+      <article><b>Dijkstra</b><p>Finds a least-cost path between two locations when all connection costs are non-negative.</p></article>
+      <article><b>TSP</b><p>The delivery tour returns to the starting point after visiting every required customer.</p></article>
+    </div>
+  </section>
+</main>
+
+<script>
+const defaults = {{ locations|tojson }};
+let locations = structuredClone(defaults);
+
+const $ = id => document.getElementById(id);
+
+function renderTable() {
+  const tbody = document.querySelector("#locationsTable tbody");
+  tbody.innerHTML = "";
+  Object.entries(locations).forEach(([name, pos]) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input class="name" value="${name}" data-old="${name}"></td>
+      <td><input class="x" type="number" step="0.1" value="${pos[0]}"></td>
+      <td><input class="y" type="number" step="0.1" value="${pos[1]}"></td>
+      <td>${name === "Restaurant" ? "" : '<button class="delete">×</button>'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  syncFromTable();
+  renderStartOptions();
+}
+
+function syncFromTable() {
+  const next = {};
+  document.querySelectorAll("#locationsTable tbody tr").forEach(row => {
+    const name = row.querySelector(".name").value.trim();
+    const x = parseFloat(row.querySelector(".x").value);
+    const y = parseFloat(row.querySelector(".y").value);
+    if (name && Number.isFinite(x) && Number.isFinite(y)) next[name] = [x, y];
+  });
+  locations = next;
+}
+
+function renderStartOptions() {
+  const select = $("startSelect");
+  const old = select.value;
+  select.innerHTML = Object.keys(locations).map(n => `<option>${n}</option>`).join("");
+  if (locations[old]) select.value = old;
+  else select.value = Object.keys(locations)[0] || "";
+}
+
+$("locationsTable").addEventListener("input", () => {
+  syncFromTable(); renderStartOptions();
+});
+$("locationsTable").addEventListener("click", e => {
+  if (e.target.classList.contains("delete")) {
+    e.target.closest("tr").remove();
+    syncFromTable(); renderStartOptions();
+  }
+});
+
+$("addBtn").onclick = () => {
+  syncFromTable();
+  let i = 1;
+  while (locations["Customer " + String.fromCharCode(64+i)]) i++;
+  locations["Customer " + String.fromCharCode(64+i)] = [Math.round(Math.random()*10), Math.round(Math.random()*10)];
+  renderTable();
+};
+
+$("resetBtn").onclick = () => { locations = structuredClone(defaults); renderTable(); $("results").classList.add("hidden"); };
+
+$("planBtn").onclick = async () => {
+  syncFromTable();
+  if (Object.keys(locations).length < 2) return alert("Add at least two locations.");
+  const res = await fetch("/api/plan", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({locations, start: $("startSelect").value})
+  });
+  const data = await res.json();
+  if (!res.ok) return alert(data.error || "Something went wrong.");
+
+  const nn = data.nearest_neighbor;
+  const imp = data.improved;
+  $("nnDistance").textContent = nn.distance + " units";
+  $("improvedDistance").textContent = imp.distance + " units";
+  $("savedDistance").textContent = Math.max(0, nn.distance - imp.distance).toFixed(2) + " units";
+
+  $("routes").innerHTML = `
+    <div class="route-box"><span>Nearest Neighbor</span><p>${nn.route.join(" → ")}</p><small>Total: ${nn.distance} units</small></div>
+    <div class="route-box improved"><span>Improved 2-Opt</span><p>${imp.route.join(" → ")}</p><small>Total: ${imp.distance} units</small></div>
+  `;
+  const d = data.dijkstra;
+  $("dijkstra").innerHTML = d.route.length
+    ? `<div class="route-box"><span>Shortest path to ${d.route[d.route.length-1]}</span><p>${d.route.join(" → ")}</p><small>Cost: ${d.distance} units</small></div>`
+    : "<p>No path found.</p>";
+  $("results").classList.remove("hidden");
+  window.scrollTo({top: $("results").offsetTop - 20, behavior:"smooth"});
+};
+
+renderTable();
+</script>
+</body>
+</html>
